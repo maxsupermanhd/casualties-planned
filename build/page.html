@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-[[.AppHash]]'; worker-src blob:; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0f1216">
@@ -168,6 +169,7 @@ textarea.json{width:100%;min-height:220px;border-radius:10px;border:1px solid va
 .info{font-size:.85rem;margin:4px 0;color:#c9d0da}
 .info b{color:var(--tx)}
 .planbar .btn{flex:1}
+.lnk{background:none;border:0;padding:0;color:var(--acc);text-decoration:underline;font-size:inherit}
 @media (max-width:520px){.trow .tnm small{display:none}.trow input.cnt{width:46px}.ibtn{min-width:36px;padding:0 6px}}
 @media (min-width:1000px){.wrap{max-width:980px}.bar .in{max-width:980px}.setupcols{display:grid;grid-template-columns:1fr 1fr;gap:0 12px;align-items:start}}
 </style>

@@ -1,4 +1,4 @@
-import { check, plan as runPlan } from "./planner";
+import { check, choices, field, limits, plan as runPlan } from "./planner";
 import type { Cell, GameData, PageData, Plan, PlanReply, Settings, Snap, Step } from "./types";
 
 const $ = (id: string): HTMLElement => {
@@ -69,6 +69,7 @@ function tile(c: Cell | null, o: TileOpt = {}): string {
   if (c) {
     if (c.n > 1) h += `<span class="cnt">×${c.n}</span>`;
     h += icon(c.id, 32) + `<span class="tn">${esc(nm(c.id))}</span>` + conds(c.conds, !!(c.tool || o.tool));
+    if (c.ammo) h += `<span class="pct">${esc(c.ammo.n)} × ${esc(nm(c.ammo.id))} loaded</span>`;
   } else h += '<span class="ib" style="width:32px;height:32px"></span><span class="tn" style="color:var(--mut)">empty</span>';
   return h + "</div>";
 }
@@ -99,7 +100,7 @@ function parseNote(n: string): Note {
     r.flags.push("first");
     r.rest = r.rest.replace(first[0], "");
   }
-  for (const [t, f] of [["XP filler", "filler"], ["INT-UP: discard the result now", "discard"]] as const) {
+  for (const [t, f] of [["XP filler", "filler"], ["INT-UP: discard the result now", "discard"], ["INT-UP: keep the result (tool)", "keep"]] as const) {
     if (r.rest.includes(t)) {
       r.flags.push(f);
       r.rest = r.rest.replace(t, "");
@@ -120,19 +121,64 @@ const isBN = (x: Step) => !!(x.bottleneck || x.breaks);
 
 // ---------------------------------------------------------------- settings
 
-function merge(base: Settings, v: unknown): Settings {
-  const out = clone(base);
-  if (!v || typeof v !== "object") return out;
-  const o = v as Record<string, unknown>;
-  for (const k of ["assumptions", "upChain", "options", "game"] as const) {
-    const sub = o[k];
-    if (sub && typeof sub === "object") Object.assign(out[k], sub);
+// The settings objects that map an item id to a value. All other objects have fixed keys.
+const records = new Set(["biochemHolders", "raws", "toolCandidates", "qualityProviders", "liquidQualities", "magazines"]);
+const elemOf: Record<string, unknown> = { extraGathers: { layer: 1, item: "", count: 1 } };
+
+const sameKind = (t: unknown, v: unknown) => typeof t === typeof v && v !== null && Array.isArray(t) === Array.isArray(v);
+
+// fitTo returns v in the shape of the template t: a value of the wrong type becomes the template value, a number
+// text becomes a number, and keys that t does not have go away.
+function fitTo(t: unknown, v: unknown, key: string): unknown {
+  if (typeof t === "number") {
+    const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+    return typeof n === "number" && Number.isFinite(n) ? n : t;
   }
-  // Old settings can hold option keys that the planner no longer has.
-  for (const k of Object.keys(out.options)) if (!(k in base.options)) delete (out.options as unknown as Record<string, unknown>)[k];
-  if (o["raws"] && typeof o["raws"] === "object") out.raws = o["raws"] as Settings["raws"];
-  if (Array.isArray(o["targets"])) out.targets = (o["targets"] as unknown[]).map(String);
+  if (typeof t !== "object" || t === null) return sameKind(t, v) ? v : t;
+  if (Array.isArray(t)) {
+    if (!Array.isArray(v)) return clone(t);
+    const et = elemOf[key] ?? t[0] ?? "";
+    return v.filter((e) => sameKind(et, e)).map((e) => fitTo(et, e, ""));
+  }
+  if (!sameKind(t, v)) return clone(t);
+  const tt = t as Record<string, unknown>;
+  const vv = v as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (records.has(key)) {
+    const et = Object.values(tt)[0];
+    if (et === undefined) return clone(t);
+    for (const [k, e] of Object.entries(vv)) if (sameKind(et, e)) out[k] = fitTo(et, e, k);
+    return out;
+  }
+  for (const k of Object.keys(tt)) out[k] = k in vv ? fitTo(tt[k], vv[k], k) : clone(tt[k]);
   return out;
+}
+
+const clampTo = (v: number, lo: number, hi: number, int = true) => Math.min(hi, Math.max(lo, int ? Math.round(v) : v));
+
+// merge makes settings from base and the values in v. Each value gets the type of base and the planner limits.
+function merge(base: Settings, v: unknown): Settings {
+  const s = fitTo(base, v, "") as Settings;
+  const a = s.assumptions;
+  for (const [path, , lo, top, int] of limits) {
+    const [o, k] = field(s, path);
+    o[k] = clampTo(o[k] as number, lo, top === "layers" ? a.layers : top, int);
+  }
+  for (const [k, vs] of Object.entries(choices)) {
+    const o = s.options as unknown as Record<string, string>;
+    if (!vs.includes(o[k]!)) o[k] = vs[0]!;
+  }
+  for (const r of Object.values(s.raws)) {
+    r.cond = clampTo(r.cond, 0.01, 1, false);
+    r.layers = r.layers.filter((l) => Number.isInteger(l) && l >= 1 && l <= a.layers);
+  }
+  for (const e of a.extraGathers) {
+    e.layer = clampTo(e.layer, 1, a.layers);
+    e.count = clampTo(e.count, 1, 99);
+  }
+  for (const k of Object.keys(a.biochemHolders)) a.biochemHolders[k] = clampTo(a.biochemHolders[k]!, 0, 100000, false);
+  for (const m of Object.values(s.game.magazines)) m.capacity = clampTo(m.capacity, 1, 1000);
+  return s;
 }
 
 function loadSettings(): Settings {
@@ -140,7 +186,7 @@ function loadSettings(): Settings {
     const s = localStorage.getItem(LS.settings);
     if (s) return merge(D.defaults, JSON.parse(s));
   } catch {
-    /* no storage */
+    /* no storage or bad JSON */
   }
   return clone(D.defaults);
 }
@@ -225,6 +271,8 @@ function getWorker(): Worker | null {
 }
 
 let toPlan = false;
+// notice is a problem to show with the next plan status.
+let notice = "";
 
 function onPlan(r: PlanReply): void {
   if (!r.ok) {
@@ -233,8 +281,9 @@ function onPlan(r: PlanReply): void {
   }
   P = r.plan;
   const n = P.steps.length;
-  status(`Planned ${n} steps in ${Math.round(r.ms)} ms.` + (P.stopped ? " Stopped: " + P.stopped : ""), !!P.stopped);
-  if (cur >= n) cur = 0;
+  status((notice ? notice + " " : "") + `Planned ${n} steps in ${Math.round(r.ms)} ms.` + (P.stopped ? " Stopped: " + P.stopped : ""), !!P.stopped || !!notice);
+  notice = "";
+  if (cur < 0 || cur >= n) cur = 0;
   setupPlanView();
   if (toPlan) mode = "plan";
   show(toPlan);
@@ -244,7 +293,7 @@ function planNow(switchView = true): void {
   toPlan = switchView;
   const bad = check(GAME, S);
   if (bad) {
-    status("Settings problem: " + bad, true);
+    status((notice ? notice + " " : "") + "Settings problem: " + bad, true);
     return;
   }
   saveSettings();
@@ -281,9 +330,7 @@ let PN: Note[] = [];
 let bnIdx: number[] = [];
 
 function xpGain(i: number): number {
-  const x = P!.steps[i]!;
-  if (i > 0) return x.after.xp - P!.steps[i - 1]!.after.xp;
-  return (PN[0]!.flags.includes("first") ? S.assumptions.firstCraftXP : 0) + (x.inclXp ?? 0);
+  return P!.steps[i]!.after.xp - (i > 0 ? P!.steps[i - 1]!.after.xp : P!.startXp);
 }
 
 function bnHTML(x: Step): string {
@@ -295,9 +342,9 @@ function bnHTML(x: Step): string {
     if (m) {
       const need = Number(m[2]);
       h += `<p>Blocked: ${esc((m[3] ?? "").split(", ").map(nm).join(", "))}.</p>` +
-        `<p>How to clear: no safe first-craft is left on this layer, so the plan descends (+${S.assumptions.descendXP} xp each layer, to layer ${P!.maxLayer} at most) until INT ${m[1]}. ` +
-        `You can clear it sooner with XP the planner does not count: ePDA +${ox["ePDA"]} (about ${Math.ceil(need / (ox["ePDA"] ?? 35))}), blueprint +${ox["blueprint"]} (about ${Math.ceil(need / (ox["blueprint"] ?? 25))}), ` +
-        `or first-crafts of biome foods/items +${ox["firstCraftFood"]} each (about ${Math.ceil(need / (ox["firstCraftFood"] ?? 10))}).</p>`;
+        `<p>How to clear: no safe first-craft is left on this layer, so the plan descends (+${esc(S.assumptions.descendXP)} xp each layer, to layer ${esc(P!.maxLayer)} at most) until INT ${esc(m[1])}. ` +
+        `You can clear it sooner with XP the planner does not count: ePDA +${esc(ox["ePDA"])} (about ${Math.ceil(need / (ox["ePDA"] ?? 35))}), blueprint +${esc(ox["blueprint"])} (about ${Math.ceil(need / (ox["blueprint"] ?? 25))}), ` +
+        `or first-crafts of biome foods/items +${esc(ox["firstCraftFood"])} each (about ${Math.ceil(need / (ox["firstCraftFood"] ?? 10))}).</p>`;
     }
     h += "</div>";
   }
@@ -365,6 +412,7 @@ function stepHTML(i: number): string {
   if (p.flags.includes("first")) h += '<span class="tag">first craft</span>';
   if (p.flags.includes("filler")) h += '<span class="tag">XP filler</span>';
   if (p.flags.includes("discard")) h += '<span class="tag w">INT-up craft: discard result</span>';
+  if (p.flags.includes("keep")) h += '<span class="tag">INT-up craft: keep the tool</span>';
   if (p.wear) h += `<span class="tag ok">wear: ${esc(p.wear)}</span>`;
   if (x.usedUp) {
     const cnt: Record<string, number> = {};
@@ -409,7 +457,7 @@ function listHTML(): string {
     const g = xpGain(i);
     const hands = [a.handR, a.handL, a.mouth].filter((c) => c).map((c) => esc(nm(c!.id))).join(", ") || "empty";
     const items = a.bags.reduce((n, b) => n + b.items.reduce((m, c) => m + c.n, 0), 0);
-    h += `<div class="lr${i === cur ? " cur" : ""}"><button class="li" data-i="${i}"><span class="num">${x.step}</span>${x.kind === "descend" ? "" : icon(x.name, 28)}<span class="lt"><b>${t}</b><span>` +
+    h += `<div class="lr" data-row="${i}"><button class="li" data-i="${i}"><span class="num">${x.step}</span>${x.kind === "descend" ? "" : icon(x.name, 28)}<span class="lt"><b>${t}</b><span>` +
       `${p.int !== null ? `Recipe INT ${p.int} d${p.d >= 0 ? "+" : ""}${p.d} · ` : ""}INT ${a.int} · ${fmt(a.xp)}/${fmt(a.nextXp)} xp${g ? ` (+${fmt(g)})` : ""} · L${a.layer} · ${fmt(Math.round(a.load * 100) / 100)}/${fmt(a.cap)}u</span></span>${isBN(x) ? '<span class="dot" title="bottleneck"></span>' : ""}</button>` +
       `<details class="sub" data-inv="${i}"><summary>Hands: ${hands} · ${a.worn.length} worn · ${a.bags.length} bag${a.bags.length === 1 ? "" : "s"}, ${items} item${items === 1 ? "" : "s"}${a.over.length ? ' · <b style="color:var(--bad)">no room</b>' : ""}</summary></details></div>`;
   });
@@ -418,6 +466,7 @@ function listHTML(): string {
 
 function sumHTML(): string {
   const st = P!.steps;
+  if (!st.length) return '<div class="empty">The plan has no steps.</div>';
   const last = st[st.length - 1]!.after;
   const raw: Record<string, number> = {};
   for (const x of st) for (const k of Object.keys(x.gathered).sort()) raw[k] = (raw[k] ?? 0) + x.gathered[k]!;
@@ -427,7 +476,7 @@ function sumHTML(): string {
   const gates = st.filter((x) => x.bottleneck);
   const breaks = st.filter((x) => x.breaks);
   let h = `<div class="kv"><span class="pill">${st.length} steps</span><span class="pill">ends layer ${last.layer} (limit ${P!.maxLayer})</span><span class="pill">INT ${last.int} (${fmt(last.xp)} xp)</span>` +
-    `<span class="pill">load ${fmt(Math.round(last.load * 100) / 100)}/${fmt(last.cap)}u</span><span class="pill">${gates.length} INT gates</span></div>`;
+    `<span class="pill">load ${fmt(Math.round(last.load * 100) / 100)}/${fmt(last.cap)}u</span><span class="pill">${gates.length} INT gates</span>${P!.lost.length ? `<span class="pill">${P!.lost.length} targets used up later</span>` : ""}</div>`;
   h += '<h3>Final kit, worn</h3><div class="grid">' + last.worn.map((w) => tile({ id: w.id, n: 1, conds: [w.cond] }, { slot: slotName(w.slot), tool: true })).join("") + "</div>";
   const carried: Cell[] = [];
   for (const c of [last.handR, last.handL, last.mouth]) if (c) carried.push(c);
@@ -446,6 +495,23 @@ function missHTML(): string {
   return `<details class="warnbox mbox"${innerWidth >= 700 ? " open" : ""}><summary><b style="color:var(--bad)">${M.length} target${M.length > 1 ? "s" : ""} not reached by layer ${P!.maxLayer}</b></summary>` + '<div class="misses">' + M.map((m) => `<div class="miss">${icon(m.id, 24)}<span><b>${esc(nm(m.id))}</b>${m.n > 1 ? ` (${m.done}/${m.n})` : ""} · blocked by ${esc(m.block)}<br><span class="why">${esc(m.why)}</span></span></div>`).join("") + "</div></details>";
 }
 
+// lostHTML shows the reached targets that later steps use up, and the planner warnings.
+function lostHTML(): string {
+  const L = P!.lost;
+  const W = P!.warnings;
+  if (!L.length && !W.length) return "";
+  let h = '<div class="warnbox">';
+  if (L.length) {
+    h += `<b style="color:var(--warn)">${L.length} reached target${L.length > 1 ? "s are" : " is"} used up later, so the final kit does not have ${L.length > 1 ? "them" : "it"}</b><div class="misses">` +
+      L.map((l) => {
+        const by = l.by.map((n) => `<button class="lnk" data-i="${n - 1}">step ${n}, ${esc(nm(P!.steps[n - 1]!.name))}</button>`).join(", ");
+        return `<div class="miss">${icon(l.id, 24)}<span><b>${esc(nm(l.id))}</b> · made ${esc(l.made)}, ${esc(l.left)} left<br><span class="why">used in ${by || "a later step"}</span></span></div>`;
+      }).join("") + "</div>";
+  }
+  for (const w of W) h += `<p class="why">${esc(w)}</p>`;
+  return h + "</div>";
+}
+
 function setupPlanView(): void {
   if (!P) return;
   PN = P.steps.map((x) => parseNote(x.note));
@@ -453,7 +519,7 @@ function setupPlanView(): void {
   $("title").innerHTML = `Crafting plan<small>${P.steps.length} steps · to layer ${esc(P.maxLayer)}</small>`;
   $("sumHead").textContent = "Summary · final kit, raw totals, bottlenecks";
   $("sumBody").innerHTML = sumHTML();
-  $("miss").innerHTML = missHTML();
+  $("miss").innerHTML = missHTML() + lostHTML();
   ($("slider") as HTMLInputElement).max = String(P.steps.length);
 }
 
@@ -466,32 +532,49 @@ function saveNav(): void {
   }
 }
 
+// listOf is the plan that the list view in #main shows. show does not draw the list again for the same plan, so
+// opened rows stay open.
+let listOf: Plan | null = null;
+
 function show(scroll = true): void {
   const setup = mode === "setup";
+  const N = P ? P.steps.length : 0;
   $("setup").classList.toggle("hide", !setup);
   $("planv").classList.toggle("hide", setup);
-  $("navbar").classList.toggle("hide", setup || !P);
+  $("navbar").classList.toggle("hide", setup || N === 0);
   $("setupbar").classList.toggle("hide", !setup);
-  $("viewBtn").classList.toggle("hide", setup || !P);
+  $("viewBtn").classList.toggle("hide", setup || N === 0);
   $("setupBtn").setAttribute("aria-pressed", String(setup));
   $("setupBtn").textContent = setup ? "Plan view" : "Setup";
   if (setup) {
-    renderSetup();
+    try {
+      renderSetup();
+    } catch (e) {
+      $("setup").innerHTML = `<div class="sec"><h2>Settings problem</h2><p class="hint">${esc(e instanceof Error ? e.message : e)}</p>` +
+        '<div class="brow2"><button class="btn p" id="resetBtn">Reset to defaults</button></div></div>';
+    }
     return;
   }
-  if (!P) {
-    $("main").innerHTML = "";
+  if (!P || N === 0) {
+    listOf = null;
+    $("main").innerHTML = P ? '<div class="empty">The plan has no steps. Look at the targets that the plan does not reach.</div>' : "";
     return;
   }
-  const N = P.steps.length;
   const x = P.steps[cur]!;
   $("viewBtn").textContent = view === "list" ? "Step view" : "List";
   $("viewBtn").setAttribute("aria-pressed", String(view === "list"));
   if (view === "list") {
-    $("main").innerHTML = listHTML();
-    const c = $("main").querySelector(".lr.cur");
+    const m = $("main");
+    if (listOf !== P) {
+      m.innerHTML = listHTML();
+      listOf = P;
+    }
+    m.querySelector(".lr.cur")?.classList.remove("cur");
+    const c = m.querySelector(`.lr[data-row="${cur}"]`);
+    c?.classList.add("cur");
     if (c && scroll) c.scrollIntoView({ block: "center" });
   } else {
+    listOf = null;
     $("main").innerHTML = stepHTML(cur);
     if (scroll) {
       const r = $("main").getBoundingClientRect();
@@ -508,7 +591,7 @@ function show(scroll = true): void {
 }
 
 function go(i: number, scroll = true): void {
-  if (!P) return;
+  if (!P || !P.steps.length) return;
   cur = Math.max(0, Math.min(P.steps.length - 1, i));
   show(scroll);
 }
@@ -526,7 +609,7 @@ function nextBN(dir: number): void {
 }
 
 function openSheet(): void {
-  if (!P) return;
+  if (!P || !P.steps.length) return;
   const st = P.steps;
   const ls: [number, number][] = [];
   let L = -1;
@@ -617,7 +700,7 @@ function renderSetup(): void {
   h += `<div class="sec"><h2>Targets <small>${ts.length} items, crafted in this order</small></h2>`;
   h += `<div class="brow2">${Object.keys(D.presets).map((k) => `<button class="btn" data-preset="${esc(k)}">${esc(k)}</button>`).join("")}<button class="btn" data-clear="targets">Clear</button></div>`;
   h += '<div style="margin-top:8px">' + ts.map((t, i) => `<div class="trow">${icon(t.id, 28)}<span class="tnm">${esc(nm(t.id))} <small>${esc(t.id)}</small></span>` +
-    `<input class="cnt" type="number" min="1" max="99" value="${t.n}" data-tn="${i}" aria-label="Count">` +
+    `<input class="cnt" type="number" min="1" max="99" value="${esc(t.n)}" data-tn="${i}" aria-label="Count">` +
     `<button class="ibtn" data-tmv="${i}" data-d="-1" aria-label="Move up">▲</button><button class="ibtn" data-tmv="${i}" data-d="1" aria-label="Move down">▼</button>` +
     `<button class="ibtn x" data-trm="${i}" aria-label="Remove">✕</button></div>`).join("") + "</div>";
   h += '<div class="brow2"><button class="btn p" data-add="targets">+ Add target</button></div></div>';
@@ -662,7 +745,7 @@ function renderSetup(): void {
     Object.entries(S.raws).map(([id, r]) => `<tr><td><input type="checkbox" data-rawon="${esc(id)}"${r.layers.length ? " checked" : ""} aria-label="Use ${esc(nm(id))}"></td>` +
       `<td class="n"><span class="nm">${icon(id, 24)}<span>${esc(nm(id))}</span></span></td>` +
       `<td><input type="text" data-rawl="${esc(id)}" value="${esc(layerText(r.layers))}" aria-label="Layers"></td>` +
-      `<td><input type="number" data-rawc="${esc(id)}" value="${Math.round(r.cond * 100)}" min="1" max="100" aria-label="Condition %"></td></tr>`).join("") +
+      `<td><input type="number" data-rawc="${esc(id)}" value="${esc(Math.round(r.cond * 100))}" min="1" max="100" aria-label="Condition %"></td></tr>`).join("") +
     "</tbody></table>";
   const traps = Object.values(D.buildings).filter((b) => b.drops.some((d) => d.id === "circuitboard") && D.rules.traps[b.id]);
   h += '<p class="hint">Circuit boards from traps (game prefabs):</p>' + traps.map((b) => {
@@ -672,9 +755,10 @@ function renderSetup(): void {
   }).join("");
   h += '<p class="hint">Carry extra items down from a layer (for layers without the source):</p>' +
     a.extraGathers.map((e, i) => `<div class="trow">${icon(e.item, 24)}<span class="tnm">${esc(nm(e.item))}</span>` +
-      `<label class="fld" style="flex-direction:row;align-items:center">L<input class="cnt" type="number" min="1" value="${e.layer}" data-eg="${i}" data-f="layer" aria-label="Layer"></label>` +
-      `<label class="fld" style="flex-direction:row;align-items:center">×<input class="cnt" type="number" min="1" value="${e.count}" data-eg="${i}" data-f="count" aria-label="Count"></label>` +
-      `<button class="ibtn x" data-egrm="${i}" aria-label="Remove">✕</button></div>`).join("") +
+      `<label class="fld" style="flex-direction:row;align-items:center">L<input class="cnt" type="number" min="1" max="${esc(a.layers)}" value="${esc(e.layer)}" data-eg="${i}" data-f="layer" aria-label="Layer"></label>` +
+      `<label class="fld" style="flex-direction:row;align-items:center">×<input class="cnt" type="number" min="1" max="99" value="${esc(e.count)}" data-eg="${i}" data-f="count" aria-label="Count"></label>` +
+      `<button class="ibtn x" data-egrm="${i}" aria-label="Remove">✕</button></div>` +
+      (e.layer >= a.maxLayer ? `<p class="hint">Not used: the plan does not go below layer ${esc(a.maxLayer)} (the layer limit).</p>` : "")).join("") +
     '<div class="brow2"><button class="btn" data-add="extraGathers">+ Add</button></div></div>';
 
   h += '<div class="sec"><h2>Settings file</h2><div class="brow2">' +
@@ -731,7 +815,9 @@ function onSetupInput(e: Event): void {
     if (r) r.cond = Math.min(1, Math.max(0.01, Number(t.value) / 100));
   } else if (d["eg"] !== undefined) {
     const g = S.assumptions.extraGathers[Number(d["eg"])];
-    if (g && (d["f"] === "layer" || d["f"] === "count")) g[d["f"]] = Math.max(1, Math.round(Number(t.value)) || 1);
+    if (g && (d["f"] === "layer" || d["f"] === "count")) g[d["f"]] = clampTo(Number(t.value) || 1, 1, d["f"] === "layer" ? S.assumptions.layers : 99);
+    changed();
+    return;
   } else return;
   saveSettings();
 }
@@ -753,12 +839,18 @@ function download(name: string, text: string): void {
   a.remove();
 }
 
+// applySettings uses the settings in v only when they pass the check.
 function applySettings(v: unknown, msg: string): void {
-  S = merge(D.defaults, v);
-  const bad = check(GAME, S);
+  const s = merge(D.defaults, v);
+  const bad = check(GAME, s);
+  if (bad) {
+    status("Settings not applied: " + bad, true);
+    return;
+  }
+  S = s;
   saveSettings();
-  renderSetup();
-  status(bad ? "Settings problem: " + bad : msg, !!bad);
+  show();
+  status(msg);
 }
 
 async function onSetupClick(e: MouseEvent): Promise<void> {
@@ -962,12 +1054,15 @@ async function start(): Promise<void> {
   bind();
   const h = location.hash;
   if (h.startsWith("#cfg=")) {
+    history.replaceState(null, "", location.pathname + location.search);
     try {
-      S = merge(D.defaults, await decodeShare(h.slice(5)));
+      const s = merge(D.defaults, await decodeShare(h.slice(5)));
+      const bad = check(GAME, s);
+      if (bad) throw new Error(bad);
+      S = s;
       saveSettings();
-      history.replaceState(null, "", location.pathname + location.search);
     } catch (e) {
-      status("Bad share link: " + (e as Error).message, true);
+      notice = "Share link not used: " + (e instanceof Error ? e.message : String(e)) + ".";
     }
   }
   try {
@@ -978,7 +1073,7 @@ async function start(): Promise<void> {
     /* no storage */
   }
   const hm = /^#(\d+)$/.exec(location.hash);
-  if (hm) cur = Number(hm[1]) - 1;
+  if (hm) cur = Math.max(0, Number(hm[1]) - 1);
   if (/^#setup$/.test(location.hash)) mode = "setup";
   show(false);
   planNow(mode === "plan");
