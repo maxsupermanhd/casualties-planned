@@ -1,3 +1,5 @@
+> **Disclaimer:** This project is fully vibecoded. An AI wrote all of the code and the docs. Use it at your own risk.
+
 # cuplan
 
 cuplan makes a crafting planner page for the game Casualties Unknown.
