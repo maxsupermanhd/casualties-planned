@@ -4,8 +4,13 @@
 # local config with your paths
 config.json
 
-# game files
+# game files (a folder or a symbolic link named game)
+/game
 /game/
 CasualtiesUnknown_Data/
 *.dll
 *.assets
+*.resS
+*.resource
+*.cs
+!/prep/testdata/*.cs
