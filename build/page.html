@@ -86,8 +86,12 @@ details.sub{margin-top:8px}
 details.sub>summary{cursor:pointer;color:var(--mut);font-size:.85rem;min-height:36px;display:flex;align-items:center}
 /* list view */
 .lh{position:sticky;top:0;z-index:5;background:var(--bg);padding:10px 0 6px;font-weight:700;color:var(--acc);border-bottom:1px solid var(--line)}
-.li{display:flex;gap:10px;align-items:center;width:100%;text-align:left;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 10px;margin:6px 0;min-height:52px}
-.li.cur{border-color:var(--acc)}
+.lr{background:var(--card);border:1px solid var(--line);border-radius:12px;margin:6px 0}
+.lr.cur{border-color:var(--acc)}
+.li{display:flex;gap:10px;align-items:center;width:100%;text-align:left;background:none;border:0;border-radius:12px;padding:8px 10px;min-height:52px}
+.lr>details.sub{margin:0;padding:0 10px}
+.lr>details.sub>summary{min-height:28px;padding-bottom:6px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lr>details[open].sub{padding-bottom:10px}
 .li .num{min-width:40px;height:40px;font-size:.95rem}
 .li .lt{flex:1;min-width:0}
 .li .lt b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

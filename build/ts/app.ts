@@ -406,8 +406,12 @@ function listHTML(): string {
       h += `<div class="lh">Layer ${L}</div>`;
     }
     const t = x.kind === "descend" ? esc(x.name.replace(/^to /, "Descend to ")) : esc(nm(x.name)) + (x.times > 1 ? " ×" + x.times : "");
-    h += `<button class="li${i === cur ? " cur" : ""}" data-i="${i}"><span class="num">${x.step}</span>${x.kind === "descend" ? "" : icon(x.name, 28)}<span class="lt"><b>${t}</b><span>` +
-      `${p.int !== null ? `INT ${p.int} d${p.d >= 0 ? "+" : ""}${p.d} · ` : ""}INT ${a.int} · ${fmt(Math.round(a.load * 100) / 100)}/${fmt(a.cap)}u</span></span>${isBN(x) ? '<span class="dot" title="bottleneck"></span>' : ""}</button>`;
+    const g = xpGain(i);
+    const hands = [a.handR, a.handL, a.mouth].filter((c) => c).map((c) => esc(nm(c!.id))).join(", ") || "empty";
+    const items = a.bags.reduce((n, b) => n + b.items.reduce((m, c) => m + c.n, 0), 0);
+    h += `<div class="lr${i === cur ? " cur" : ""}"><button class="li" data-i="${i}"><span class="num">${x.step}</span>${x.kind === "descend" ? "" : icon(x.name, 28)}<span class="lt"><b>${t}</b><span>` +
+      `${p.int !== null ? `Recipe INT ${p.int} d${p.d >= 0 ? "+" : ""}${p.d} · ` : ""}INT ${a.int} · ${fmt(a.xp)}/${fmt(a.nextXp)} xp${g ? ` (+${fmt(g)})` : ""} · L${a.layer} · ${fmt(Math.round(a.load * 100) / 100)}/${fmt(a.cap)}u</span></span>${isBN(x) ? '<span class="dot" title="bottleneck"></span>' : ""}</button>` +
+      `<details class="sub" data-inv="${i}"><summary>Hands: ${hands} · ${a.worn.length} worn · ${a.bags.length} bag${a.bags.length === 1 ? "" : "s"}, ${items} item${items === 1 ? "" : "s"}${a.over.length ? ' · <b style="color:var(--bad)">no room</b>' : ""}</summary></details></div>`;
   });
   return h;
 }
@@ -485,7 +489,7 @@ function show(scroll = true): void {
   $("viewBtn").setAttribute("aria-pressed", String(view === "list"));
   if (view === "list") {
     $("main").innerHTML = listHTML();
-    const c = $("main").querySelector(".li.cur");
+    const c = $("main").querySelector(".lr.cur");
     if (c && scroll) c.scrollIntoView({ block: "center" });
   } else {
     $("main").innerHTML = stepHTML(cur);
@@ -927,6 +931,12 @@ function bind(): void {
     } else return;
     e.preventDefault();
   });
+  // The list view renders a step's inventory only when its row is opened.
+  $("main").addEventListener("toggle", (e) => {
+    const d = e.target as HTMLDetailsElement;
+    const i = d.dataset["inv"];
+    if (d.open && i !== undefined && !d.querySelector("h3")) d.insertAdjacentHTML("beforeend", invHTML(Number(i)));
+  }, true);
   let tx: number | null = null;
   let ty = 0;
   $("main").addEventListener("touchstart", (e) => {
