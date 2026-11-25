@@ -1,0 +1,17 @@
+{
+ "assumptions": {
+  "startINT": 0,
+  "startItems": ["lamp"],
+  "lights": ["lamp"],
+  "liquidHolder": "canteen",
+  "biochemHolders": {"canteen": 300},
+  "storageCraft": "pack",
+  "maxLayer": 4,
+  "gambleCondition": 0.2,
+  "extraGathers": []
+ },
+ "upChain": {"gunRecipes": [], "gamble": ["helmet"], "neverFiller": []},
+ "options": {"fillers": false, "guns": "never", "gambleMode": "list", "safeInt": false, "intCap": 0, "disabled": [], "biochemFull": false},
+ "game": {"bags": ["pack"], "toolCandidates": {"cutting": ["blade"]}, "qualityProviders": {}},
+ "targets": ["blade", "plank"]
+}

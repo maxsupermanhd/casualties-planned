@@ -1,0 +1,14 @@
+[
+ {"int": 0, "result": "blade", "amount": 1, "cond": 1, "category": "Tools", "items": [{"id": "wood", "minCond": 0}]},
+ {"int": 1, "result": "plank", "amount": 1, "cond": 1, "category": "Materials", "items": [{"id": "wood", "minCond": 0}, {"q": "cutting", "amt": 1, "kept": true, "minCond": 0}]},
+ {"int": 0, "result": "pack", "amount": 1, "cond": 1, "category": "Utility", "items": [{"id": "wood", "minCond": 0}, {"id": "wood", "minCond": 0}]},
+ {"int": 1, "result": "spear", "amount": 1, "cond": 1, "category": "Tools", "items": [{"id": "blade", "minCond": 0}, {"id": "wood", "minCond": 0}]},
+ {"int": 0, "result": "clip", "amount": 1, "cond": 1, "category": "Utility", "items": [{"id": "wood", "minCond": 0}]},
+ {"int": 0, "result": "shell", "amount": 2, "cond": 1, "category": "Utility", "items": [{"id": "wood", "minCond": 0}]},
+ {"int": 5, "result": "helmet", "amount": 1, "cond": 1, "category": "Clothing", "items": [{"id": "wood", "minCond": 0}]},
+ {"int": 0, "result": "rod", "amount": 1, "cond": 1, "category": "Materials", "items": [{"id": "gem", "minCond": 0}]},
+ {"int": 0, "result": "rod", "amount": 1, "cond": 1, "category": "Materials", "items": [{"id": "wood", "minCond": 0}, {"id": "wood", "minCond": 0}]},
+ {"int": 0, "result": "lantern", "amount": 1, "cond": 1, "category": "Utility", "items": [{"id": "lamp", "minCond": 0}, {"id": "wood", "minCond": 0}]},
+ {"int": 0, "result": "chisel", "amount": 1, "cond": 1, "category": "Tools", "items": [{"id": "wood", "minCond": 0}]},
+ {"int": 0, "result": "blade", "amount": 1, "cond": 1, "category": "Tools", "repair": true, "items": [{"id": "blade", "minCond": 0}, {"id": "wood", "minCond": 0}]}
+]

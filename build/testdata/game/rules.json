@@ -1,0 +1,21 @@
+{
+ "layers": 4,
+ "carryCap": 10,
+ "backSlots": 1,
+ "firstCraftXP": 10,
+ "descendXP": 80,
+ "otherXP": {"ePDA": 35, "blueprint": 25, "firstCraftFood": 10},
+ "intWindow": 3,
+ "outcomes": [{"d": 0, "text": "full result"}, {"d": -1, "text": "50% full result, 50% lower condition"}],
+ "biochemLastLayer": 4,
+ "raws": {
+  "wood": {"layers": [1, 2, 3, 4], "cond": 1, "note": "trees"},
+  "ore": {"layers": [3, 4], "cond": 1, "note": "rocks"}
+ },
+ "traps": {"zapper": {"name": "Zapper", "layers": [1, 2]}},
+ "handsOnly": [],
+ "toolQualities": ["cutting"],
+ "liquidQualities": {"water": {"water": 1, "groundwater": 0.4}},
+ "magazines": {"clip": {"round": "shell", "capacity": 3}},
+ "liquidNames": {"water": "Water", "groundwater": "Groundwater", "biochem": "Biochem"}
+}

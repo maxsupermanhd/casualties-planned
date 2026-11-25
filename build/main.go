@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/template"
 
@@ -104,8 +106,10 @@ func compile(entry string) (string, error) {
 		return "", fmt.Errorf("esbuild wrote %d files, want 1", len(r.OutputFiles))
 	}
 	js := string(r.OutputFiles[0].Contents)
-	if strings.Contains(strings.ToLower(js), "</script") {
-		return "", errors.New("compiled script contains </script")
+	for _, bad := range []string{"</script", "<!--"} {
+		if strings.Contains(strings.ToLower(js), bad) {
+			return "", fmt.Errorf("compiled script contains %s", bad)
+		}
 	}
 	return js, nil
 }
@@ -121,9 +125,9 @@ func readJSON(p string, v any) error {
 	return nil
 }
 
-// pageData reads the prep output and adds the default settings. Values that come from the game rules fill the
-// settings keys that defaults.json does not set.
-func pageData(dataDir string) (map[string]any, []byte, error) {
+// pageData reads the prep output and adds the default settings (defaults.json). Values that come from the game
+// rules fill the settings keys that the defaults do not set.
+func pageData(dataDir string, defaults []byte) (map[string]any, []byte, error) {
 	d := map[string]any{}
 	for _, k := range []string{"recipes", "items", "names", "containers", "buildings", "rules", "atlas"} {
 		var v any
@@ -142,7 +146,7 @@ func pageData(dataDir string) (map[string]any, []byte, error) {
 	}
 	d["atlasSize"] = []int{ac.Width, ac.Height}
 	var def map[string]any
-	if err := json.Unmarshal(defaultsJSON, &def); err != nil {
+	if err := json.Unmarshal(defaults, &def); err != nil {
 		return nil, nil, fmt.Errorf("defaults.json: %w", err)
 	}
 	rules, ok := d["rules"].(map[string]any)
@@ -170,6 +174,9 @@ func pageData(dataDir string) (map[string]any, []byte, error) {
 		def["raws"] = rules["raws"]
 	}
 	presets, _ := def["presets"].(map[string]any)
+	if presets == nil {
+		presets = map[string]any{}
+	}
 	delete(def, "presets")
 	for k, v := range presets {
 		if l, _ := v.([]any); len(l) == 0 {
@@ -177,36 +184,124 @@ func pageData(dataDir string) (map[string]any, []byte, error) {
 		}
 	}
 	d["defaults"], d["presets"] = def, presets
+	if err := prune(d); err != nil {
+		return nil, nil, err
+	}
 	return d, atlas, nil
 }
 
+// prune drops the item data that no plan can use and the buildings that the page does not show. An item stays when
+// a recipe makes or uses it, when it has a quality that a recipe asks for, when it can hold liquid (the page offers
+// it as the water holder), or when the settings or the rules name it. The names and the icons of all items stay.
+func prune(d map[string]any) error {
+	var recipes []struct {
+		Result string
+		Items  []struct{ ID, Q string }
+	}
+	if err := remarshal(d["recipes"], &recipes); err != nil {
+		return fmt.Errorf("recipes.json: %w", err)
+	}
+	var items map[string]struct {
+		Capacity float64
+		Quals    []struct{ ID string }
+	}
+	if err := remarshal(d["items"], &items); err != nil {
+		return fmt.Errorf("items.json: %w", err)
+	}
+	all, _ := d["items"].(map[string]any)
+	conts, _ := d["containers"].(map[string]any)
+	keep := map[string]bool{}
+	quals := map[string]bool{}
+	for _, r := range recipes {
+		keep[r.Result] = true
+		for _, g := range r.Items {
+			keep[g.ID] = true
+			quals[g.Q] = true
+		}
+	}
+	var named func(v any)
+	named = func(v any) {
+		switch x := v.(type) {
+		case string:
+			keep[x] = true
+		case []any:
+			for _, e := range x {
+				named(e)
+			}
+		case map[string]any:
+			for k, e := range x {
+				keep[k] = true
+				named(e)
+			}
+		}
+	}
+	named(d["defaults"])
+	named(d["presets"])
+	named(d["rules"])
+	for id, it := range items {
+		hasQ := slices.ContainsFunc(it.Quals, func(q struct{ ID string }) bool { return quals[q.ID] })
+		if !keep[id] && !hasQ && it.Capacity <= 0 {
+			delete(all, id)
+			delete(conts, id)
+		}
+	}
+	rules, _ := d["rules"].(map[string]any)
+	traps, _ := rules["traps"].(map[string]any)
+	bs, _ := d["buildings"].(map[string]any)
+	for id := range bs {
+		if _, ok := traps[id]; !ok {
+			delete(bs, id)
+		}
+	}
+	return nil
+}
+
+// remarshal decodes the JSON value v into out.
+func remarshal(v, out any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, out)
+}
+
 func build(cfg *Config) (int, error) {
-	d, atlas, err := pageData(filepath.Join(cfg.WorkDir, "data"))
-	if err != nil {
-		return 0, err
-	}
-	app, err := compile(`import "./app"`)
-	if err != nil {
-		return 0, fmt.Errorf("app.ts: %w", err)
-	}
-	worker, err := compile(`import "./worker"`)
-	if err != nil {
-		return 0, fmt.Errorf("worker.ts: %w", err)
-	}
-	blob, err := json.Marshal(d)
-	if err != nil {
-		return 0, err
-	}
-	var b bytes.Buffer
-	err = pageT.Execute(&b, map[string]string{"Data": string(blob), "App": app, "Worker": worker,
-		"Atlas": "data:image/png;base64," + base64.StdEncoding.EncodeToString(atlas)})
+	b, err := page(filepath.Join(cfg.WorkDir, "data"), defaultsJSON)
 	if err != nil {
 		return 0, err
 	}
 	if err := os.MkdirAll(filepath.Dir(cfg.Page), 0o755); err != nil {
 		return 0, err
 	}
-	return b.Len(), os.WriteFile(cfg.Page, b.Bytes(), 0o644)
+	return len(b), os.WriteFile(cfg.Page, b, 0o644)
+}
+
+// page makes the HTML page from the prep output in dataDir and the default settings.
+func page(dataDir string, defaults []byte) ([]byte, error) {
+	d, atlas, err := pageData(dataDir, defaults)
+	if err != nil {
+		return nil, err
+	}
+	app, err := compile(`import "./app"`)
+	if err != nil {
+		return nil, fmt.Errorf("app.ts: %w", err)
+	}
+	worker, err := compile(`import "./worker"`)
+	if err != nil {
+		return nil, fmt.Errorf("worker.ts: %w", err)
+	}
+	blob, err := json.Marshal(d)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(app))
+	var b bytes.Buffer
+	err = pageT.Execute(&b, map[string]string{"Data": string(blob), "App": app, "Worker": worker,
+		"AppHash": base64.StdEncoding.EncodeToString(sum[:]), "Atlas": "data:image/png;base64," + base64.StdEncoding.EncodeToString(atlas)})
+	if err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
 }
 
 func main() {

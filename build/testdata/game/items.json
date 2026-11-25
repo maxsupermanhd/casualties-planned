@@ -1,0 +1,18 @@
+{
+ "wood": {"weight": 0.5, "tags": "material"},
+ "ore": {"weight": 1},
+ "gem": {"weight": 0.1},
+ "blade": {"weight": 0.3, "tags": "tool", "destroyAt0": true, "quals": [{"id": "cutting", "amt": 4}]},
+ "chisel": {"weight": 0.2, "tags": "tool", "destroyAt0": true, "quals": [{"id": "cutting", "amt": 2}]},
+ "plank": {"weight": 0.4, "tags": "material"},
+ "pack": {"weight": 0.5},
+ "spear": {"weight": 1},
+ "clip": {"weight": 0.3, "destroyAt0": true},
+ "shell": {"weight": 0.05, "destroyAt0": true},
+ "helmet": {"weight": 1, "armor": 1, "slot": "hat"},
+ "rod": {"weight": 0.4},
+ "lamp": {"weight": 0.2},
+ "lantern": {"weight": 0.6},
+ "canteen": {"weight": 0.5, "capacity": 300},
+ "junk": {"weight": 2}
+}
