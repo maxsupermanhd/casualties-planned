@@ -1,0 +1,56 @@
+{
+	"assumptions": {
+		"startINT": 7,
+		"startItems": ["lightbulb"],
+		"lights": ["flashlight", "lightbulb"],
+		"liquidHolder": "canteen",
+		"biochemHolders": {"canteen": 300, "saline": 750},
+		"storageCraft": "foliagebag",
+		"maxLayer": 5,
+		"gambleCondition": 0.2,
+		"extraGathers": [{"layer": 7, "item": "circuitboard", "count": 2}]
+	},
+	"upChain": {
+		"gunRecipes": ["makeshiftrifle", "magazinebase", "smallmagazine", "riflemagazine", "casing", "9mmround", "556round", "12gauge", "boxof12gauge"],
+		"gamble": ["riothelmet", "tacticalboots", "tacticalgloves", "bikehelmet"],
+		"neverFiller": ["mercscarf"]
+	},
+	"options": {
+		"fillers": true,
+		"guns": "auto",
+		"gambleMode": "list",
+		"safeInt": false,
+		"intCap": 0,
+		"disabled": [],
+		"biochemFull": true
+	},
+	"game": {
+		"bags": ["foliagebag", "slingbag", "bigpack", "belt", "traumarig", "materialpouch"],
+		"toolCandidates": {
+			"cutting": ["flimsyknife"],
+			"hammering": ["makeshiftdiggingtool", "scraptube", "stick"],
+			"nails": ["nails"],
+			"heatsource": ["campfire"],
+			"firestarter": ["firestarter"],
+			"rippable": ["canvas"]
+		},
+		"qualityProviders": {"nails": "nails", "foliage": "foliage", "flammable": "woodscraps", "dressing": "bandage", "produce": "stonefruitopen"}
+	},
+	"targets": [
+		"foliagebag", "flimsyknife", "canteen", "saline", "makeshiftdiggingtool", "limbwraps", "makeshifthelmet", "slingbag",
+		"crudecleaver", "makeshiftwrench", "materialpouch", "belt", "scarf", "flashlight", "machete", "wrench",
+		"makeshiftrifle", "smallmagazine", "smallmagazine", "9mmround*7", "riflemagazine", "riflemagazine", "556round*15",
+		"pickaxe", "bikehelmet", "bigpack", "titaniummultitool", "tacticalgloves", "traumarig", "titaniummachete", "titaniumpickaxe",
+		"tacticalboots", "minilaserdrill", "riothelmet"
+	],
+	"presets": {
+		"Full kit": [],
+		"No firearms": [
+			"foliagebag", "flimsyknife", "canteen", "saline", "makeshiftdiggingtool", "limbwraps", "makeshifthelmet", "slingbag",
+			"crudecleaver", "makeshiftwrench", "materialpouch", "belt", "scarf", "flashlight", "machete", "wrench",
+			"pickaxe", "bikehelmet", "bigpack", "titaniummultitool", "tacticalgloves", "traumarig", "titaniummachete", "titaniumpickaxe",
+			"tacticalboots", "minilaserdrill", "riothelmet"
+		],
+		"Early kit": ["foliagebag", "flimsyknife", "canteen", "saline", "makeshiftdiggingtool", "limbwraps", "makeshifthelmet", "slingbag"]
+	}
+}

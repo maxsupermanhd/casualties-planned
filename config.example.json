@@ -1,0 +1,14 @@
+{
+	"gameDir": "game",
+	"gameDataDir": "CasualtiesUnknown_Data",
+	"decompiler": {
+		"command": "ilspycmd",
+		"args": ["-p", "-o", "{out}", "{dll}"],
+		"env": {
+			"DOTNET_ROLL_FORWARD": "Major",
+			"DOTNET_CLI_TELEMETRY_OPTOUT": "1"
+		}
+	},
+	"workDir": "work",
+	"page": "work/cuplan.html"
+}

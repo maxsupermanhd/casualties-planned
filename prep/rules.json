@@ -1,0 +1,42 @@
+{
+	"layers": 10,
+	"carryCap": 10,
+	"backSlots": 3,
+	"firstCraftXP": 10,
+	"descendXP": 80,
+	"otherXP": {"ePDA": 35, "blueprint": 25, "firstCraftFood": 10},
+	"intWindow": 3,
+	"outcomes": [
+		{"d": 0, "text": "full result"},
+		{"d": -1, "text": "50% full result, 50% at 20-90% condition"},
+		{"d": -2, "text": "50% nothing"},
+		{"d": -3, "text": "50% nothing and a hand injury"}
+	],
+	"biochemLastLayer": 6,
+	"raws": {
+		"foliage":        {"layers": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "cond": 1, "note": "leaf blocks 7.5% drop (50-100%)"},
+		"woodscraps":     {"layers": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "cond": 1, "note": "wood/log blocks"},
+		"scrapmetal":     {"layers": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "cond": 1, "note": "scrap piles 5-20% / steel tiles 50-100%, combined to 100%"},
+		"plasticchunk":   {"layers": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "cond": 1, "note": "rubber/plastic blocks 50%"},
+		"rawcopper":      {"layers": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "cond": 1, "note": "copper ore, every layer"},
+		"carcass":        {"layers": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "cond": 1, "note": "small animal corpse"},
+		"glowplantfruit": {"layers": [1, 2, 3, 4, 5, 6], "cond": 1, "note": "glowplant (layers 1-6 only)"},
+		"stonefruitopen": {"layers": [1, 2, 3, 4, 5, 6, 9, 10], "cond": 1, "note": "stone plant fruit, opened by use"},
+		"ilmenitechunk":  {"layers": [5, 6, 7, 8, 9, 10], "cond": 1, "note": "ilmenite ore, layer 5+"},
+		"circuitboard":   {"layers": [1, 2, 3, 4, 5, 6, 7, 9, 10], "cond": 0.5, "note": "trap drop: spike stabber 35%, jump pad 50%, 0-100% condition (mean 50%)"}
+	},
+	"traps": {
+		"spikestabber": {"name": "Spike stabber", "layers": [1, 2, 5, 6, 10]},
+		"jumppad": {"name": "Jump pad", "layers": [1, 2, 3, 4, 5, 6, 7]},
+		"fan": {"name": "Fan", "layers": [3, 4, 6, 9, 10]},
+		"turret": {"name": "Turret", "layers": [3, 4, 6, 10]}
+	},
+	"handsOnly": ["pickaxe", "titaniumpickaxe", "campfire"],
+	"toolQualities": ["cutting", "hammering", "nails", "heatsource", "firestarter"],
+	"liquidQualities": {"water": {"water": 1, "groundwater": 0.4}},
+	"magazines": {
+		"smallmagazine": {"round": "9mmround", "capacity": 17},
+		"riflemagazine": {"round": "556round", "capacity": 30}
+	},
+	"liquidNames": {"biochem": "Biochem", "groundwater": "Groundwater", "water": "Water", "producejuice": "Produce juice", "refinedjuice": "Refined juice", "saline": "Saline"}
+}
