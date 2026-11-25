@@ -1,4 +1,4 @@
-import type { BagJ, Cell, GameData, ItemInfo, Miss, Plan, Recipe, Settings, Snap, Step, WornJ } from "./types";
+import type { BagJ, Cell, GameData, ItemInfo, Lost, Miss, Plan, Recipe, Settings, Snap, Step, WornJ } from "./types";
 
 type Kind = "int" | "layer" | "room" | "cap" | "other";
 
@@ -69,9 +69,12 @@ export function xpFor(l: number): number {
   return xpCache[l];
 }
 
+// maxINT bounds intOf. The settings allow a start INT of 40 at most.
+const maxINT = 60;
+
 export function intOf(xp: number): number {
   let l = 0;
-  while (xpFor(l + 1) <= xp) l++;
+  while (l < maxINT && xpFor(l + 1) <= xp) l++;
   return l;
 }
 
@@ -118,6 +121,8 @@ interface Goal {
 }
 
 const discardNote = "INT-UP: discard the result now";
+const keepNote = "INT-UP: keep the result (tool)";
+const maxRounds = 5000;
 
 class World {
   readonly byResult = new Map<string, number[]>();
@@ -169,6 +174,7 @@ interface Bag {
 }
 
 interface Pack {
+  ammo: Map<number, number>;
   handR: It | null;
   handL: It | null;
   mouth: It | null;
@@ -191,6 +197,7 @@ class State {
   cur: Entry | null = null;
   pend: Record<string, number> = {};
   filler = false;
+  warn: string[] = [];
   bneck = "";
   bioUID = 0;
   jugUID = 0;
@@ -206,6 +213,7 @@ class State {
     c.log = this.log.slice();
     c.cur = null;
     c.pend = { ...this.pend };
+    c.warn = this.warn.slice();
     return c;
   }
 
@@ -222,6 +230,7 @@ class State {
     this.cur = o.cur;
     this.pend = o.pend;
     this.filler = o.filler;
+    this.warn = o.warn;
     this.bneck = o.bneck;
     this.bioUID = o.bioUID;
     this.jugUID = o.jugUID;
@@ -491,14 +500,15 @@ class State {
     e.note += " WEAR " + slot;
   }
 
-  craft(ri: number, top: boolean, lvl: number): void {
+  // craft makes recipe ri. Only a gamble craft (a target on the gamble list, on the last layer) can start at d = -1.
+  craft(ri: number, top: boolean, lvl: number, gamble = false): void {
     const r = this.w.recipes[ri]!;
     const o = this.w.cfg.options;
     if (o.disabled.includes(r.result)) throw new PlanError(`the recipe for ${r.result} is turned off`);
     if (o.intCap > 0 && r.int > o.intCap) throw new PlanError(`${r.result} needs INT ${r.int}, above the INT cap ${o.intCap}`, "cap");
     const inINT = this.INT();
     const dlt = inINT - r.int;
-    if (dlt < 0 && (o.safeInt || !(top && this.minus && dlt === -1))) throw intErr(r.int, inINT);
+    if (dlt < 0 && (o.safeInt || !(gamble && dlt === -1))) throw intErr(r.int, inINT);
     const slot = this.w.info(r.result).slot ?? "";
     const drop = lvl === 0 && this.filler;
     const wrap = (e: unknown) => asPlan(e).wrap(r.result + " <- ");
@@ -579,12 +589,12 @@ class State {
     let cond = r.cond;
     if (dlt === -1) {
       cond *= this.a.gambleCondition;
-      e.note += ` d=-1 GAMBLE: 50% full, 50% at 20-90% (sim assumes worst ${fixed(cond * 100, 0)}%)`;
+      e.note += ` d=-1 GAMBLE: 50% full result, 50% lower condition (the plan assumes ${fixed(cond * 100, 0)}%)`;
     }
     if (r.liquid) {
-      this.delta(r.result + " mL", r.cond * r.amount);
+      this.delta(r.result + " mL", cond * r.amount);
       if (drop) e.note += " " + discardNote;
-      else add(this.liq, r.result, r.cond * r.amount);
+      else add(this.liq, r.result, cond * r.amount);
     } else {
       const holders = this.a.biochemHolders;
       for (let k = 0; k < r.amount; k++) {
@@ -593,6 +603,7 @@ class State {
           if (k === 0) e.note += " " + discardNote;
           continue;
         }
+        if (drop && k === 0) e.note += " " + keepNote;
         const u = this.add(r.result, cond);
         if (slot !== "" && k === 0) this.wear(u);
         const [b, c] = this.bio();
@@ -670,21 +681,26 @@ class State {
   }
 
   pack(): Pack {
-    const p: Pack = { handR: null, handL: null, mouth: null, worn: [], bags: [], over: [], load: 0 };
+    const p: Pack = { ammo: new Map(), handR: null, handL: null, mouth: null, worn: [], bags: [], over: [], load: 0 };
     const li = this.light();
     if (li >= 0) p.handR = { ...this.inv[li]! };
-    const mag: Record<string, number> = {};
+    // Rounds go into the magazines. The game destroys a loaded round, and a magazine keeps its own weight.
+    const room: { uid: number; round: string; left: number }[] = [];
     for (const it of this.inv) {
       const m = this.w.cfg.game.magazines[it.id];
-      if (m) add(mag, m.round, m.capacity);
+      if (m) room.push({ uid: it.uid, round: m.round, left: m.capacity });
+    }
+    const loaded = new Set<number>();
+    for (const it of this.inv) {
+      const m = room.find((x) => x.round === it.id && x.left > 0);
+      if (!m) continue;
+      m.left--;
+      p.ammo.set(m.uid, (p.ammo.get(m.uid) ?? 0) + 1);
+      loaded.add(it.uid);
     }
     const loose: It[] = [];
     this.inv.forEach((it, i) => {
-      if (i === li) return;
-      if ((mag[it.id] ?? 0) > 0) {
-        mag[it.id]!--;
-        return;
-      }
+      if (i === li || loaded.has(it.uid)) return;
       if (it.worn) {
         p.worn.push(it);
         const c = this.w.conts.get(it.id);
@@ -728,7 +744,7 @@ class State {
     return p;
   }
 
-  cells(its: It[]): Cell[] {
+  cells(its: It[], ammo: Map<number, number>): Cell[] {
     const out: Cell[] = [];
     const at = new Map<string, number>();
     for (const it of its) {
@@ -743,12 +759,15 @@ class State {
       const c = out[i]!;
       c.n++;
       c.conds.push(goRound(it.c * 1000) / 1000);
+      const n = ammo.get(it.uid);
+      const m = this.w.cfg.game.magazines[it.id];
+      if (n && m) c.ammo = { id: m.round, n: (c.ammo?.n ?? 0) + n };
     }
     return out;
   }
 
-  cell(it: It | null): Cell | null {
-    return it ? this.cells([it])[0]! : null;
+  cell(it: It | null, ammo: Map<number, number>): Cell | null {
+    return it ? this.cells([it], ammo)[0]! : null;
   }
 
   bio(): [string, number] {
@@ -763,11 +782,11 @@ class State {
     const n = this.INT();
     const j: Snap = {
       int: n, xp: this.xp, nextXp: xpFor(n + 1), load: p.load, cap: this.a.carryCap, layer: this.depth + 1,
-      handR: this.cell(p.handR), handL: this.cell(p.handL), mouth: this.cell(p.mouth), worn: [], bags: [], over: this.cells(p.over), liq: {},
+      handR: this.cell(p.handR, p.ammo), handL: this.cell(p.handL, p.ammo), mouth: this.cell(p.mouth, p.ammo), worn: [], bags: [], over: this.cells(p.over, p.ammo), liq: {},
     };
     for (const it of p.worn) j.worn.push({ slot: this.w.info(it.id).slot ?? "", id: it.id, cond: goRound(it.c * 1000) / 1000 } satisfies WornJ);
     for (const b of p.bags) {
-      const bj: BagJ = { id: b.it.id, where: b.where, max: b.c.max, used: goRound(b.used * 100) / 100, enc: b.c.enc, items: this.cells(b.items) };
+      const bj: BagJ = { id: b.it.id, where: b.where, max: b.c.max, used: goRound(b.used * 100) / 100, enc: b.c.enc, items: this.cells(b.items, p.ammo) };
       if (b.c.tags.length) bj.tags = b.c.tags.join(",");
       j.bags.push(bj);
     }
@@ -835,27 +854,39 @@ class State {
     return this.w.cfg.options.gambleMode === "all" || this.w.cfg.upChain.gamble.includes(id);
   }
 
+  // goalCraft makes target g with the first of its recipes that works. The error is the one of the first recipe.
   goalCraft(g: Goal): void {
+    let first: PlanError | null = null;
     for (const ri of this.w.results(g.id)) {
       const r = this.w.recipes[ri]!;
       if (r.repair || r.liquid) continue;
-      if (this.minus && !this.gambleOK(g.id) && this.INT() < r.int) throw intErr(r.int, this.INT());
-      for (const ing of r.items) {
-        const l = this.light();
-        if (ing.id && !this.a.lights.includes(g.id) && l >= 0 && ing.id === this.inv[l]!.id && this.INT() >= r.int) {
-          const fr = Math.max(0, this.recipeFor(ing.id));
-          try {
-            this.craft(fr, true, 0);
-          } catch (e) {
-            throw asPlan(e).wrap(`spare ${ing.id}: `);
-          }
-          this.log[this.log.length - 1]!.note += " SPARE light: the next craft eats one";
-        }
+      const c = this.clone();
+      const err = tryDo(() => c.goalRecipe(ri, g.id));
+      if (!err) {
+        this.set(c);
+        return;
       }
-      this.craft(ri, true, 0);
-      return;
+      first ??= err;
     }
-    throw new PlanError("no recipe for " + g.id);
+    throw first ?? new PlanError("no recipe for " + g.id);
+  }
+
+  goalRecipe(ri: number, id: string): void {
+    const r = this.w.recipes[ri]!;
+    for (const ing of r.items) {
+      const l = this.light();
+      if (ing.id && !this.a.lights.includes(id) && l >= 0 && ing.id === this.inv[l]!.id && this.INT() >= r.int) {
+        const fr = this.recipeFor(ing.id);
+        if (fr < 0) throw new PlanError(`the recipe eats the light ${ing.id}, and no recipe makes a spare one`);
+        try {
+          this.craft(fr, true, 0);
+        } catch (e) {
+          throw asPlan(e).wrap(`spare ${ing.id}: `);
+        }
+        this.log[this.log.length - 1]!.note += " SPARE light: the next craft eats one";
+      }
+    }
+    this.craft(ri, true, 0, this.minus && this.gambleOK(id));
   }
 
   fit(c: State, g: Goal): [State, PlanError | null] {
@@ -899,6 +930,8 @@ function blockOf(e: PlanError | null): string {
   return "recipe";
 }
 
+const maxCount = 99;
+
 export function goals(targets: string[]): Goal[] {
   if (targets.length === 0) throw new Error("the target list is empty");
   return targets.map((s) => {
@@ -909,20 +942,66 @@ export function goals(targets: string[]): Goal[] {
       id = s.slice(0, at);
       const b = s.slice(at + 1);
       n = /^\d+$/.test(b) ? Number(b) : 0;
-      if (n < 1) throw new Error(`bad target "${s}"`);
+      if (n < 1 || n > maxCount) throw new Error(`bad target "${s}": the count must be 1 to ${maxCount}`);
     }
     if (id === "") throw new Error(`bad target "${s}"`);
     return { id, n, done: 0, why: "", err: null };
   });
 }
 
+const inRange = (v: unknown, lo: number, hi: number, int = false) => typeof v === "number" && v >= lo && v <= hi && (!int || Number.isInteger(v));
+
+// limits are the bounds of the number settings: path, name, lowest, highest ("layers" is the number of layers) and
+// whole number. The page clamps the settings to them, and check rejects a value outside them.
+export const limits: [string, string, number, number | "layers", boolean][] = [
+  ["assumptions.layers", "layers", 1, 100, true],
+  ["assumptions.startINT", "start INT", 0, 40, true],
+  ["assumptions.carryCap", "carry cap", 0.1, 1000, false],
+  ["assumptions.backSlots", "back slots", 0, 6, true],
+  ["assumptions.maxLayer", "layer limit", 1, "layers", true],
+  ["assumptions.firstCraftXP", "XP per first craft", 0, 1000, false],
+  ["assumptions.descendXP", "XP per descent", 0, 10000, false],
+  ["assumptions.gambleCondition", "gamble result condition", 0.01, 1, false],
+  ["assumptions.biochemLastLayer", "last biochem layer", 0, "layers", true],
+  ["options.intCap", "INT cap", 0, 40, true],
+];
+
+// choices are the values of the text options.
+export const choices = { guns: ["auto", "always", "never"], gambleMode: ["list", "all", "off"] };
+
+// field returns the object that holds the setting at path ("section.key") and the key.
+export function field(cfg: Settings, path: string): [Record<string, unknown>, string] {
+  const [sec, key] = path.split(".") as [keyof Settings, string];
+  return [cfg[sec] as unknown as Record<string, unknown>, key];
+}
+
 // check returns the first problem with the settings, or "".
 export function check(data: GameData, cfg: Settings): string {
+  try {
+    return checkOrThrow(data, cfg);
+  } catch (e) {
+    return "a setting has the wrong type: " + (e instanceof Error ? e.message : String(e));
+  }
+}
+
+function checkOrThrow(data: GameData, cfg: Settings): string {
   const a = cfg.assumptions;
-  if (!(a.carryCap > 0)) return "carry cap must be more than 0";
-  if (!(a.layers >= 1)) return "layers must be 1 or more";
-  if (!(a.maxLayer >= 1 && a.maxLayer <= a.layers)) return `layer limit must be 1 to ${a.layers}`;
-  if (a.startINT < 0 || a.backSlots < 0) return "start INT and back slots must not be negative";
+  for (const [path, name, lo, top, int] of limits) {
+    const hi = top === "layers" ? a.layers : top;
+    const [o, k] = field(cfg, path);
+    if (!inRange(o[k], lo, hi, int)) return `${name} must be ${int ? "a whole number " : ""}from ${lo} to ${hi}`;
+  }
+  for (const [k, v] of Object.entries(choices)) if (!v.includes(String(cfg.options[k as keyof typeof choices]))) return `${k} must be one of ${v.join(", ")}`;
+  for (const [id, ml] of Object.entries(a.biochemHolders)) if (!inRange(ml, 0, 100000)) return `biochem holder ${id} must hold 0 to 100000 mL`;
+  for (const [id, r] of Object.entries(cfg.raws)) {
+    if (!inRange(r.cond, 0.01, 1)) return `the condition of ${id} must be 1 to 100%`;
+    if (!r.layers.every((l) => inRange(l, 1, a.layers, true))) return `the layers of ${id} must be 1 to ${a.layers}`;
+  }
+  for (const e of a.extraGathers) {
+    if (!cfg.raws[e.item]) return `extra item ${e.item} is not a raw resource`;
+    if (!inRange(e.layer, 1, a.layers, true) || !inRange(e.count, 1, maxCount, true)) return `extra item ${e.item}: the layer must be 1 to ${a.layers} and the count 1 to ${maxCount}`;
+  }
+  for (const [id, m] of Object.entries(cfg.game.magazines)) if (!inRange(m.capacity, 1, 1000, true)) return `magazine ${id} must hold 1 to 1000 rounds`;
   if (a.lights.length === 0) return "the light list needs at least one item";
   try {
     for (const g of goals(cfg.targets)) if (!data.items[g.id]) return `unknown target item ${g.id}`;
@@ -940,7 +1019,7 @@ export function check(data: GameData, cfg: Settings): string {
   return "";
 }
 
-function simulate(w: World): { s: State; gs: Goal[]; stopped: string } {
+function simulate(w: World): { s: State; gs: Goal[]; stopped: string; made: Record<string, number> } {
   const cfg = w.cfg;
   const gs = goals(cfg.targets);
   let s = new State(w);
@@ -952,7 +1031,10 @@ function simulate(w: World): { s: State; gs: Goal[]; stopped: string } {
     if (cfg.options.guns === "auto") guns = guns || cfg.upChain.gunRecipes.includes(g.id);
   }
   let stopped = "";
-  loop: for (let iter = 0; iter < 5000; iter++) {
+  const tried = new Set<number>();
+  const made: Record<string, number> = {};
+  let iter = 0;
+  for (; iter < maxRounds; iter++) {
     let progressed = false;
     for (const g of gs) {
       if (g.done >= g.n) continue;
@@ -973,6 +1055,8 @@ function simulate(w: World): { s: State; gs: Goal[]; stopped: string } {
       g.done++;
       g.why = "";
       g.err = null;
+      const d = count(c2, g.id) - count(s, g.id);
+      if (d > 0) add(made, g.id, d);
       s = c2;
       progressed = true;
       break;
@@ -1017,23 +1101,24 @@ function simulate(w: World): { s: State; gs: Goal[]; stopped: string } {
     let bn = "";
     if (gate < Infinity) bn = `INT ${gate} gate: ${fixed(xpFor(gate) - s.xp, 0)} xp short (${who.join(", ")})`;
     if (s.depth + 1 < cfg.assumptions.maxLayer) {
-      for (const e of cfg.assumptions.extraGathers) {
-        if (e.layer !== s.depth + 1) continue;
+      cfg.assumptions.extraGathers.forEach((e, i) => {
+        if (e.layer !== s.depth + 1) return;
+        tried.add(i);
         const c = s.clone();
-        for (let k = 0; k < e.count; k++) {
-          const ge = tryDo(() => c.gather(e.item));
-          if (ge) {
-            stopped = ge.message;
-            break loop;
-          }
+        const ge = tryDo(() => {
+          for (let k = 0; k < e.count; k++) c.gather(e.item);
+        });
+        if (ge) {
+          s.warn.push(`Extra ${e.item} from layer ${e.layer} skipped: ${ge.message}.`);
+          return;
         }
         const err = c.settle();
         if (err) {
           bn = `${bn} no room to take ${e.count} ${e.item} down: ${err.message}`.trim();
-          continue;
+          return;
         }
         s = c;
-      }
+      });
       s.bneck = bn;
       s.descend();
       const err = s.settle();
@@ -1050,7 +1135,17 @@ function simulate(w: World): { s: State; gs: Goal[]; stopped: string } {
     }
     break;
   }
-  return { s, gs, stopped };
+  if (iter === maxRounds) stopped = `the planner stopped after ${maxRounds} rounds without an end`;
+  cfg.assumptions.extraGathers.forEach((e, i) => {
+    if (tried.has(i)) return;
+    const why = e.layer >= cfg.assumptions.maxLayer ? `the plan does not go below layer ${cfg.assumptions.maxLayer} (the layer limit)` : `the plan does not leave layer ${e.layer}`;
+    s.warn.push(`Extra ${e.item} from layer ${e.layer} is not used: ${why}.`);
+  });
+  return { s, gs, stopped, made };
+}
+
+function count(s: State, id: string): number {
+  return s.inv.reduce((n, it) => n + (it.id === id ? 1 : 0), 0);
 }
 
 function newStep(e: Entry): Step {
@@ -1135,13 +1230,27 @@ function steps(s: State): Step[] {
   return out;
 }
 
+// lost lists the reached targets that a later step uses up, so the final kit has fewer of them than the plan made.
+function lost(s: State, made: Record<string, number>, st: Step[]): Lost[] {
+  const out: Lost[] = [];
+  for (const [id, n] of Object.entries(made)) {
+    const left = count(s, id);
+    if (left >= n) continue;
+    const from = st.findIndex((x) => x.goal && x.name === id);
+    const by = st.slice(from + 1).filter((x) => (x.used[id] ?? 0) > 0 || ` ${x.breaks ?? ""} ${x.usedUp ?? ""} `.includes(` ${id} `)).map((x) => x.step);
+    out.push({ id, made: n, left, by });
+  }
+  return out;
+}
+
 export function plan(data: GameData, cfg: Settings): Plan {
   const bad = check(data, cfg);
   if (bad) throw new Error(bad);
   const w = new World(data, cfg);
-  const { s, gs, stopped } = simulate(w);
+  const { s, gs, stopped, made } = simulate(w);
   const left: Miss[] = gs.filter((g) => g.done < g.n).map((g) => ({ id: g.id, done: g.done, n: g.n, block: stopped && !g.err ? "stopped" : blockOf(g.err), why: g.why || stopped }));
-  const p: Plan = { maxLayer: cfg.assumptions.maxLayer, steps: steps(s), notReached: left };
+  const st = steps(s);
+  const p: Plan = { maxLayer: cfg.assumptions.maxLayer, startXp: xpFor(cfg.assumptions.startINT), steps: st, notReached: left, lost: lost(s, made, st), warnings: s.warn };
   if (stopped) p.stopped = stopped;
   return p;
 }

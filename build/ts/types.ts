@@ -172,6 +172,7 @@ export interface Cell {
   n: number;
   conds: number[];
   tool?: boolean;
+  ammo?: { id: string; n: number };
 }
 
 export interface WornJ {
@@ -237,10 +238,20 @@ export interface Miss {
   why: string;
 }
 
+export interface Lost {
+  id: string;
+  made: number;
+  left: number;
+  by: number[];
+}
+
 export interface Plan {
   maxLayer: number;
+  startXp: number;
   steps: Step[];
   notReached: Miss[];
+  lost: Lost[];
+  warnings: string[];
   stopped?: string;
 }
 
