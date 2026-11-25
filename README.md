@@ -8,8 +8,10 @@ The page is one HTML file. It contains the game data, the item icons, the styles
 runs in your browser. You set the targets and the rules in the page, and the page makes the plan. The page does
 not send requests and does not need a server. You can open it from a disk (`file://`) or put it on any static host.
 
-This repository does not contain game files, decompiled game code or game images. The programs make them on your
-computer, from your copy of the game.
+The source code in this repository does not contain game files or decompiled game code. The programs read your copy
+of the game on your computer. But the built page, `site/index.html`, contains game assets: all item icons (the
+atlas), the English item names, and the recipe and item data from the game. These assets belong to the game studio.
+The Unlicense covers only the code, not the game assets.
 
 ## Programs
 
@@ -30,13 +32,17 @@ go run ./build config.json
 
 Then open `work/cuplan.html` in a browser.
 
-To publish the page, copy it to `site/index.html` and push. The workflow `.github/workflows/pages.yml` deploys the
-`site/` folder to GitHub Pages. CI cannot build the page, because it has no game files. In the repository settings,
-set Pages to the source "GitHub Actions".
+To publish the page, copy it to `site/index.html` and push. When you publish `site/`, you also publish the game
+assets in the page (icons, names and data). Make sure that you can do this. The workflow
+`.github/workflows/pages.yml` deploys the `site/` folder to GitHub Pages. CI cannot build the page, because it has no game files. CI runs `gofmt -l`,
+`go vet` and `go test ./...` first, and deploys only when they pass. In the repository settings, set Pages to the
+source "GitHub Actions".
 
 ## Requirements
 
-- Go 1.23 or later. The Go programs get esbuild and lac as Go modules. You do not need Node.js or npm.
+- Go 1.23 or later. The Go programs get esbuild and lac as Go modules. You do not need Node.js or npm to
+  build the page.
+- For the tests only: node or bun, and Chromium (see [Test](#test)).
 - ilspycmd, the command-line ILSpy decompiler. Only `prep` uses it.
 - Your installed copy of Casualties Unknown.
 
@@ -89,7 +95,8 @@ The page opens on the plan. It plans with the settings that you used last. The f
   goes to a step, a layer or the next bottleneck. Each step shows what to gather and craft, the INT and XP, and
   the inventory after the step: the hands, the mouth, the worn items and each bag. The summary shows the final kit,
   the total raw resources and all bottlenecks. The top box shows each target that the plan does not reach, and
-  what blocks it (INT, INT cap, layer, storage, carry cap or recipe).
+  what blocks it (INT, INT cap, layer, storage, carry cap or recipe). It also shows the lost targets and the
+  planner warnings (see below).
 - **Setup**: all settings. Push **Plan** to make a new plan. The planner runs in a Web Worker, so the page stays
   responsive.
   - Targets: add items with the item picker, set the count, change the sequence, or use a preset.
@@ -103,7 +110,12 @@ The page opens on the plan. It plans with the settings that you used last. The f
   - Settings file: export the settings as JSON, import a JSON file, copy a share link (the settings go in the
     URL after `#cfg=`), reset to the defaults, or edit all settings as JSON.
 
-The page keeps the settings, the step and the view in the local storage of the browser.
+The page keeps the settings, the step and the view in the local storage of the browser. The page checks all
+settings from a share link, a file or the JSON editor. It keeps only values of the correct type, in the permitted
+range. If a share link is bad, the page keeps your settings and shows a notice.
+
+The page has a Content Security Policy. It runs only its own script (by its SHA-256 hash) and the planner worker,
+loads images only from `data:` URLs, and sends no requests.
 
 The default settings are in `build/defaults.json`. `build` adds the values from `rules.json` that
 `defaults.json` does not set.
@@ -140,7 +152,20 @@ The planner obeys these rules:
   A liquid result that you keep needs a free canteen.
 - If the items do not fit, the planner crafts a bag for a free back slot. If they still do not fit, it tries the
   target again later.
+- An INT-up craft keeps a tool result: an item with the tag or category "tool", or with a tool quality. It discards
+  all other results. The plan shows "INT-UP: keep the result (tool)" or "INT-UP: discard the result now".
 - When no target and no XP craft is possible, it descends, until the layer limit.
+- On each descent, all liquids are emptied, and the liquid holder is free again. Only the biochem in its holder
+  stays.
+- Rounds go into magazines of that round type, up to the magazine capacity. A loaded round is not a loose item and
+  adds no load, because the game destroys the round when it loads it, and a magazine keeps its own weight. The plan
+  shows the loaded rounds in the magazine.
+- A later craft can use up a target that the plan made before. Then the final kit has fewer of that target. The
+  plan does not show it as a missed target. It shows it as a lost target ("used up later"), with the steps that
+  use it.
+- An extra gather (an item carried down from a layer) that is not possible gives a warning, and the planner skips
+  it. For example, the item is not on that layer. An extra gather that the plan never reaches also gives a
+  warning, for example when its layer is at or below the layer limit.
 
 These are assumptions. The game code does not confirm them:
 
@@ -152,22 +177,33 @@ These are assumptions. The game code does not confirm them:
 ## Test
 
 ```
+gofmt -l .
 go vet ./...
 go test ./...
 ```
 
-`build/main_test.go` has an equivalence test. It runs the TypeScript planner in headless Chromium with the default
-settings, and compares the plan step by step with a reference plan. The reference plan came from the earlier Go
-planner. It was then made again after two changes: the planner discards the liquid result of an INT-up craft, and
-the wear of canvas and nails moves from `toolWear` and `breaks` to `matWear` and `usedUp`. The steps, amounts and
-wear values did not change. It needs the `prep` output in `work/data/`, the reference plan in `work/ref/steps.json` (or set `CUPLAN_REF`), and Chromium in
-`PATH` (or set `CHROME`). If one is missing, the test is skipped.
+The planner tests compile `build/ts/planner.ts` with esbuild and run it in node or bun (or set `CUPLAN_JS`). If
+neither is in `PATH`, these tests are skipped. When `CI` is set, a missing tool makes the test fail.
 
-`TestSafeInt` makes a plan with `options.safeInt` on. It fails if a craft step has d < 0, a gamble note, or an INT
-before the craft that is less than the recipe INT.
+Most tests use the small fixture in `build/testdata/`. They check the rules, not a stored plan. For example:
+`TestLostTarget` (lost targets), `TestMagazine` (loaded rounds and load), `TestFillerResults` (INT-up tool results),
+`TestExtraGathers` (warnings), `TestGambleOnlyTargets` and `TestNoSteps`.
 
-`TestKeptMaterials` fails if an item without the game tag "tool" has tool wear or a tool break, or if a tool is
-"used up".
+`TestPage` builds the page from the fixture and opens it in headless Chromium through the DevTools Protocol. It
+opens a share link with bad values, the setup view and a plan without steps. It fails if the CSP blocks something,
+if the share link puts an element in the page, or if the page does not show a plan. It needs Chromium in `PATH`
+(`chromium`, `chromium-browser` or `google-chrome`), or set `CHROME`, for example to the Playwright
+`chrome-headless-shell`.
+
+Some tests use the `prep` output of the real game in `work/data/`. They are skipped when it is not there, also in
+CI:
+
+- `TestLiquidDiscard` fails if the liquid result of an INT-up craft stays in a holder.
+- `TestSafeInt` makes a plan with `options.safeInt` on. It fails if a craft step has d < 0, a gamble note, or an
+  INT before the craft that is less than the recipe INT.
+- `TestKeptMaterials` fails if an item without the game tag "tool" has tool wear or a tool break, or if a tool is
+  "used up".
+- `TestPruneKeepsPlan` fails if the pruned page data gives a different default plan.
 
 To check the TypeScript types, use the TypeScript compiler with `tsconfig.json` (strict mode):
 
@@ -179,4 +215,5 @@ The build does not need this step. esbuild does not check types.
 
 ## License
 
-The owner has not chosen a license yet.
+The code is released into the public domain under the Unlicense (see `LICENSE`). The Unlicense does not cover the
+game assets in the built page. They belong to the game studio.
