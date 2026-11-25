@@ -23,7 +23,7 @@
 		"glowplantfruit": {"layers": [1, 2, 3, 4, 5, 6], "cond": 1, "note": "glowplant (layers 1-6 only)"},
 		"stonefruitopen": {"layers": [1, 2, 3, 4, 5, 6, 9, 10], "cond": 1, "note": "stone plant fruit, opened by use"},
 		"ilmenitechunk":  {"layers": [5, 6, 7, 8, 9, 10], "cond": 1, "note": "ilmenite ore, layer 5+"},
-		"circuitboard":   {"layers": [1, 2, 3, 4, 5, 6, 7, 9, 10], "cond": 0.5, "note": "trap drop: spike stabber 35%, jump pad 50%, 0-100% condition (mean 50%)"}
+		"circuitboard":   {"layers": [1, 2, 3, 4, 5, 6, 7, 9, 10], "cond": 0.5, "note": "trap drop: spike stabber 35%, jump pad 50%, fan 50%, turret 100%; condition 0-100% (turret 1-100%), mean 50%"}
 	},
 	"traps": {
 		"spikestabber": {"name": "Spike stabber", "layers": [1, 2, 5, 6, 10]},

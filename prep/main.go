@@ -56,17 +56,48 @@ func loadConfig(path string) (*Config, error) {
 		if !filepath.IsAbs(*p) {
 			*p = filepath.Join(dir, *p)
 		}
-		if *p, err = filepath.Abs(*p); err != nil {
-			return nil, err
+		if *p, err = resolve(*p); err != nil {
+			return nil, fmt.Errorf("config %s: %w", path, err)
 		}
 	}
 	if strings.ContainsRune(cfg.Decompiler.Command, filepath.Separator) && !filepath.IsAbs(cfg.Decompiler.Command) {
 		cfg.Decompiler.Command = filepath.Join(dir, cfg.Decompiler.Command)
 	}
-	if cfg.WorkDir == cfg.GameDir {
-		return nil, fmt.Errorf("config %s: workDir must not be the game directory", path)
+	// prep deletes <workDir>/decomp, so that folder must not hold the game, and prep must not write into the game.
+	if within(cfg.WorkDir, cfg.GameDir) || within(cfg.GameDir, filepath.Join(cfg.WorkDir, "decomp")) {
+		return nil, fmt.Errorf("config %s: workDir %s must not be in gameDir %s, and gameDir must not be in workDir/decomp", path, cfg.WorkDir, cfg.GameDir)
 	}
 	return cfg, nil
+}
+
+// resolve makes p absolute and resolves the symbolic links in the part of p that exists.
+func resolve(p string) (string, error) {
+	p, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for {
+		r, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			return filepath.Join(r, rest), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return "", err
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
+}
+
+// within reports whether p is dir or a path inside dir.
+func within(p, dir string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func decompile(cfg *Config, dll, out string) error {
@@ -94,12 +125,34 @@ func decompile(cfg *Config, dll, out string) error {
 //go:embed rules.json
 var rulesJSON []byte
 
+// writeFile writes to a temporary file in the same folder and then renames it, so a reader never sees half a file.
+func writeFile(path string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(b)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(f.Name(), 0o644)
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), path)
+	}
+	if err != nil {
+		return errors.Join(err, os.Remove(f.Name()))
+	}
+	return nil
+}
+
 func writeJSON(path string, v any) error {
 	b, err := json.MarshalIndent(v, "", " ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	return writeFile(path, b)
 }
 
 var unsafeName = regexp.MustCompile(`[\x00-\x1f<>]`)
@@ -152,6 +205,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("Item.cs: %w", err)
 	}
+	if len(recipes) == 0 || len(items) == 0 {
+		return fmt.Errorf("found %d recipes and %d items in the decompiled code (a different ilspycmd version?)", len(recipes), len(items))
+	}
 	lb, err := os.ReadFile(lang)
 	if err != nil {
 		return err
@@ -182,21 +238,21 @@ func run() error {
 	if err := json.Unmarshal(rulesJSON, &rules); err != nil {
 		return fmt.Errorf("rules.json: %w", err)
 	}
-	for name, v := range map[string]any{"recipes.json": recipes, "items.json": items, "names.json": names, "containers.json": pf.containers,
-		"buildings.json": pf.buildings, "rules.json": rules, "atlas.json": index} {
-		if err := writeJSON(filepath.Join(out, name), v); err != nil {
+	files := []struct {
+		name string
+		v    any
+	}{{"recipes.json", recipes}, {"items.json", items}, {"names.json", names}, {"containers.json", pf.containers},
+		{"buildings.json", pf.buildings}, {"rules.json", rules}, {"atlas.json", index}}
+	for _, f := range files {
+		if err := writeJSON(filepath.Join(out, f.name), f.v); err != nil {
 			return err
 		}
 	}
-	w, err := os.Create(filepath.Join(out, "atlas.png"))
-	if err != nil {
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, atlas); err != nil {
 		return err
 	}
-	err = png.Encode(w, atlas)
-	if cerr := w.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
+	if err := writeFile(filepath.Join(out, "atlas.png"), pngBuf.Bytes()); err != nil {
 		return err
 	}
 	fmt.Printf("%s: %d recipes, %d items, %d names, %d icons (%dx%d atlas), %d containers, %d buildings\n", out, len(recipes), len(items), len(names),
@@ -254,20 +310,132 @@ type ItemInfo struct {
 	Quals      []Qual  `json:"quals,omitempty"`
 }
 
-func block(src string, open int) (string, error) {
+// skipLit returns the index after the string or char literal that starts at src[i], or -1 if it does not end.
+// It knows verbatim (@"") and interpolated ($"{x}") strings.
+func skipLit(src string, i int) int {
+	if src[i] == '\'' {
+		for j := i + 1; j < len(src); j++ {
+			switch src[j] {
+			case '\\':
+				j++
+			case '\'':
+				return j + 1
+			}
+		}
+		return -1
+	}
+	verbatim, interp := false, false
+	for k := i - 1; k >= 0 && k >= i-2; k-- {
+		switch src[k] {
+		case '@':
+			verbatim = true
+			continue
+		case '$':
+			interp = true
+			continue
+		}
+		break
+	}
+	for j := i + 1; j < len(src); j++ {
+		c := src[j]
+		switch {
+		case c == '"' && verbatim && j+1 < len(src) && src[j+1] == '"':
+			j++
+		case c == '"':
+			return j + 1
+		case c == '\\' && !verbatim:
+			j++
+		case c == '{' && interp && j+1 < len(src) && src[j+1] == '{':
+			j++
+		case c == '{' && interp:
+			end, err := closeOf(src, j)
+			if err != nil {
+				return -1
+			}
+			j = end
+		}
+	}
+	return -1
+}
+
+// closeOf returns the index of the bracket that closes the one at src[open]. It skips literals and // comments.
+func closeOf(src string, open int) (int, error) {
 	d := 0
 	for j := open; j < len(src); j++ {
 		switch src[j] {
-		case '{':
+		case '"', '\'':
+			n := skipLit(src, j)
+			if n < 0 {
+				return 0, fmt.Errorf("unterminated literal at %d", j)
+			}
+			j = n - 1
+		case '/':
+			if j+1 < len(src) && src[j+1] == '/' {
+				if n := strings.IndexByte(src[j:], '\n'); n >= 0 {
+					j += n
+				} else {
+					j = len(src)
+				}
+			}
+		case '{', '(', '[':
 			d++
-		case '}':
+		case '}', ')', ']':
 			d--
 			if d == 0 {
-				return src[open : j+1], nil
+				return j, nil
 			}
 		}
 	}
-	return "", fmt.Errorf("unbalanced block at %d", open)
+	return 0, fmt.Errorf("unbalanced block at %d", open)
+}
+
+func block(src string, open int) (string, error) {
+	end, err := closeOf(src, open)
+	if err != nil {
+		return "", err
+	}
+	return src[open : end+1], nil
+}
+
+// fields returns the top-level "key = value" members of an object initializer block "{ ... }". A string value
+// loses its quotes.
+func fields(b string) (map[string]string, error) {
+	out := map[string]string{}
+	add := func(part string) {
+		k, v, ok := strings.Cut(part, "=")
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if !ok || !wordID.MatchString(k) {
+			return
+		}
+		if len(v) >= 2 && v[0] == '"' && skipLit(v, 0) == len(v) {
+			v = v[1 : len(v)-1]
+		}
+		out[k] = v
+	}
+	start := 1
+	for j := 1; j < len(b)-1; j++ {
+		switch b[j] {
+		case '"', '\'', '{', '(', '[':
+			var end int
+			if b[j] == '"' || b[j] == '\'' {
+				end = skipLit(b, j) - 1
+				if end < 0 {
+					return nil, fmt.Errorf("unterminated literal at %d", j)
+				}
+			} else {
+				var err error
+				if end, err = closeOf(b, j); err != nil {
+					return nil, err
+				}
+			}
+			j = end
+		case ',':
+			add(b[start:j])
+			start = j + 1
+		}
+	}
+	add(b[start : len(b)-1])
+	return out, nil
 }
 
 func num(s string) (float64, error) {
@@ -275,35 +443,25 @@ func num(s string) (float64, error) {
 }
 
 var (
-	reRecipe  = regexp.MustCompile(`recipes\.Add\(new Recipe\s*\{`)
-	reINT     = regexp.MustCompile(`\bINT = (-?\d+)`)
-	reResult  = regexp.MustCompile(`(?s)result = new RecipeResult\s*\{(.*?)\}`)
-	reID      = regexp.MustCompile(`\bid = "(\w+)"`)
-	reAmount  = regexp.MustCompile(`\bamount = (\d+)`)
-	reRCond   = regexp.MustCompile(`resultCondition = ([\d.]+f?)`)
-	reCat     = regexp.MustCompile(`category = RecipeCategory\.(\w+)`)
-	reRItem   = regexp.MustCompile(`new RecipeItem(\(([\d.]+f?)\))?\s*\{`)
-	reSpec    = regexp.MustCompile(`specificId = "(\w+)"`)
-	reMinC    = regexp.MustCompile(`minimumCondition = ([\d.]+f?)`)
-	reQNew    = regexp.MustCompile(`quality = new CraftingQuality\("(\w+)"(?:,\s*([\d.]+f?))?\)`)
-	reQStr    = regexp.MustCompile(`quality = "(\w+)"`)
-	reItem    = regexp.MustCompile(`GlobalItems\.Add\("(\w+)", new \w+\s*\{`)
-	reQualLst = regexp.MustCompile(`(?s)\n\t\t\tqualities = new List<CraftingQuality>\s*\{(.*?)\n\t\t\t\}`)
-	reQual    = regexp.MustCompile(`CraftingQuality\("(\w+)"(?:,\s*([\d.]+f?))?\)`)
-	reField   = map[string]*regexp.Regexp{}
+	reRecipe = regexp.MustCompile(`recipes\s*\.\s*Add\s*\(\s*new\s+Recipe\s*(?:\(\s*\)\s*)?\{`)
+	reRItem  = regexp.MustCompile(`new\s+RecipeItem\s*(\(\s*([\d.]+f?)\s*\))?\s*\{`)
+	reQNew   = regexp.MustCompile(`^new\s+CraftingQuality\s*\(\s*"(\w+)"\s*(?:,\s*([\d.]+f?)\s*)?\)$`)
+	reItem   = regexp.MustCompile(`GlobalItems\s*\.\s*Add\s*\(\s*"(\w+)"\s*,\s*new\s+\w+\s*(?:\(\s*\)\s*)?\{`)
+	reQual   = regexp.MustCompile(`new\s+CraftingQuality\s*\(\s*"(\w+)"\s*(?:,\s*([\d.]+f?)\s*)?\)`)
+	reInit   = regexp.MustCompile(`^new\s+[\w<>.]+\s*(?:\(\s*\)\s*)?\{`)
 )
 
-func field(b, k string) string {
-	re, ok := reField[k]
-	if !ok {
-		re = regexp.MustCompile(`\n\t\t\t` + regexp.QuoteMeta(k) + ` = ("[^"]*"|[^,\n]+),?\n`)
-		reField[k] = re
-	}
-	m := re.FindStringSubmatch(b)
+// sub returns the fields of a value "new T { ... }".
+func sub(v string) (map[string]string, error) {
+	m := reInit.FindStringIndex(v)
 	if m == nil {
-		return ""
+		return nil, fmt.Errorf("%.40q is not an object initializer", v)
 	}
-	return strings.Trim(m[1], `"`)
+	b, err := block(v, m[1]-1)
+	if err != nil {
+		return nil, err
+	}
+	return fields(b)
 }
 
 func parseRecipes(src string) ([]Recipe, error) {
@@ -313,74 +471,77 @@ func parseRecipes(src string) ([]Recipe, error) {
 		if err != nil {
 			return nil, err
 		}
+		f, err := fields(b)
+		if err != nil {
+			return nil, fmt.Errorf("recipe at %d: %w", loc[0], err)
+		}
 		var r Recipe
-		m := reINT.FindStringSubmatch(b)
-		if m == nil {
-			return nil, fmt.Errorf("no INT in recipe at %d", loc[0])
+		if r.INT, err = strconv.Atoi(f["INT"]); err != nil {
+			return nil, fmt.Errorf("recipe at %d: INT: %w", loc[0], err)
 		}
-		if r.INT, err = strconv.Atoi(m[1]); err != nil {
-			return nil, err
+		res, err := sub(f["result"])
+		if err != nil {
+			return nil, fmt.Errorf("recipe at %d: result: %w", loc[0], err)
 		}
-		res := reResult.FindStringSubmatch(b)
-		if res == nil {
-			return nil, fmt.Errorf("no result at %d", loc[0])
+		r.Result = res["id"]
+		if !wordID.MatchString(r.Result) {
+			return nil, fmt.Errorf("recipe at %d: bad result id %q", loc[0], r.Result)
 		}
-		id := reID.FindStringSubmatch(res[1])
-		if id == nil {
-			return nil, fmt.Errorf("no result id at %d", loc[0])
-		}
-		r.Result = id[1]
 		r.Amount, r.Cond = 1, 1
-		if a := reAmount.FindStringSubmatch(res[1]); a != nil {
-			if r.Amount, err = strconv.Atoi(a[1]); err != nil {
-				return nil, err
+		if a, ok := res["amount"]; ok {
+			if r.Amount, err = strconv.Atoi(a); err != nil {
+				return nil, fmt.Errorf("recipe %s: amount: %w", r.Result, err)
 			}
 		}
-		if c := reRCond.FindStringSubmatch(res[1]); c != nil {
-			if r.Cond, err = num(c[1]); err != nil {
-				return nil, err
+		if c, ok := res["resultCondition"]; ok {
+			if r.Cond, err = num(c); err != nil {
+				return nil, fmt.Errorf("recipe %s: resultCondition: %w", r.Result, err)
 			}
 		}
-		r.Liquid = strings.Contains(res[1], "isLiquid = true")
+		r.Liquid = res["isLiquid"] == "true"
 		r.Category = "Materials"
-		if c := reCat.FindStringSubmatch(b); c != nil {
-			r.Category = c[1]
+		if c, ok := strings.CutPrefix(f["category"], "RecipeCategory."); ok {
+			r.Category = c
 		}
-		r.Repair = strings.Contains(b, "isRepair = true")
-		at := strings.Index(b, "items = new List<RecipeItem>")
-		if at < 0 {
+		r.Repair = f["isRepair"] == "true"
+		il, ok := f["items"]
+		if !ok {
 			return nil, fmt.Errorf("no items in recipe %s", r.Result)
 		}
-		ib := b[at:]
-		for _, il := range reRItem.FindAllStringSubmatchIndex(ib, -1) {
-			it, err := block(ib, il[1]-1)
+		for _, m := range reRItem.FindAllStringSubmatchIndex(il, -1) {
+			ib, err := block(il, m[1]-1)
 			if err != nil {
 				return nil, err
 			}
+			it, err := fields(ib)
+			if err != nil {
+				return nil, fmt.Errorf("recipe %s: %w", r.Result, err)
+			}
 			// 0.9 is the RecipeItem default minimum condition in the game code.
-			g := Ing{MinCond: 0.9, Kept: strings.Contains(it, "destroyItem = false"), Liquid: strings.Contains(it, "isLiquid = true"), NoMax: strings.Contains(it, "noMaxCondition = true")}
-			if il[4] >= 0 {
-				if g.MinCond, err = num(ib[il[4]:il[5]]); err != nil {
+			g := Ing{MinCond: 0.9, Kept: it["destroyItem"] == "false", Liquid: it["isLiquid"] == "true", NoMax: it["noMaxCondition"] == "true", ID: it["specificId"]}
+			if m[4] >= 0 {
+				if g.MinCond, err = num(il[m[4]:m[5]]); err != nil {
 					return nil, err
 				}
 			}
-			if mc := reMinC.FindStringSubmatch(it); mc != nil {
-				if g.MinCond, err = num(mc[1]); err != nil {
+			if mc, ok := it["minimumCondition"]; ok {
+				if g.MinCond, err = num(mc); err != nil {
 					return nil, err
 				}
 			}
-			if s := reSpec.FindStringSubmatch(it); s != nil {
-				g.ID = s[1]
-			}
-			if q := reQNew.FindStringSubmatch(it); q != nil {
-				g.Q, g.Amt = q[1], 1
-				if q[2] != "" {
-					if g.Amt, err = num(q[2]); err != nil {
-						return nil, err
+			if q := it["quality"]; q != "" {
+				g.Q, g.Amt = q, 1
+				if qm := reQNew.FindStringSubmatch(q); qm != nil {
+					g.Q = qm[1]
+					if qm[2] != "" {
+						if g.Amt, err = num(qm[2]); err != nil {
+							return nil, err
+						}
 					}
 				}
-			} else if q := reQStr.FindStringSubmatch(it); q != nil {
-				g.Q, g.Amt = q[1], 1
+				if !wordID.MatchString(g.Q) {
+					return nil, fmt.Errorf("recipe %s: bad quality %q", r.Result, q)
+				}
 			}
 			if g.ID == "" && g.Q == "" {
 				return nil, fmt.Errorf("ingredient without id or quality in %s", r.Result)
@@ -395,34 +556,37 @@ func parseRecipes(src string) ([]Recipe, error) {
 func parseItems(src string) (map[string]ItemInfo, error) {
 	out := map[string]ItemInfo{}
 	for _, m := range reItem.FindAllStringSubmatchIndex(src, -1) {
+		id := src[m[2]:m[3]]
 		b, err := block(src, m[1]-1)
 		if err != nil {
 			return nil, err
 		}
+		f, err := fields(b)
+		if err != nil {
+			return nil, fmt.Errorf("item %s: %w", id, err)
+		}
 		var it ItemInfo
 		for k, p := range map[string]*float64{"weight": &it.Weight, "capacity": &it.Capacity, "wearableArmor": &it.Armor, "wearableHitDurabilityLossMultiplier": &it.HitLoss} {
-			if v := field(b, k); v != "" {
+			if v := f[k]; v != "" {
 				if *p, err = num(v); err != nil {
-					return nil, fmt.Errorf("%s %s: %w", src[m[2]:m[3]], k, err)
+					return nil, fmt.Errorf("%s %s: %w", id, k, err)
 				}
 			}
 		}
-		it.Slot, it.Limb, it.Tags, it.Category = field(b, "wearSlotId"), field(b, "desiredWearLimb"), field(b, "tags"), field(b, "category")
-		it.DestroyAt0 = field(b, "destroyAtZeroCondition") == "true"
-		it.Combine = field(b, "combineable") == "true"
-		it.ScaleW = field(b, "scaleWeightWithCondition") == "true"
-		if ql := reQualLst.FindStringSubmatch(b); ql != nil {
-			for _, q := range reQual.FindAllStringSubmatch(ql[1], -1) {
-				a := 1.0
-				if q[2] != "" {
-					if a, err = num(q[2]); err != nil {
-						return nil, err
-					}
+		it.Slot, it.Limb, it.Tags, it.Category = f["wearSlotId"], f["desiredWearLimb"], f["tags"], f["category"]
+		it.DestroyAt0 = f["destroyAtZeroCondition"] == "true"
+		it.Combine = f["combineable"] == "true"
+		it.ScaleW = f["scaleWeightWithCondition"] == "true"
+		for _, q := range reQual.FindAllStringSubmatch(f["qualities"], -1) {
+			a := 1.0
+			if q[2] != "" {
+				if a, err = num(q[2]); err != nil {
+					return nil, err
 				}
-				it.Quals = append(it.Quals, Qual{q[1], a})
 			}
+			it.Quals = append(it.Quals, Qual{q[1], a})
 		}
-		out[src[m[2]:m[3]]] = it
+		out[id] = it
 	}
 	return out, nil
 }
