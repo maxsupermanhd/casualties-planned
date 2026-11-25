@@ -30,6 +30,10 @@ go run ./build config.json
 
 Then open `work/cuplan.html` in a browser.
 
+To publish the page, copy it to `site/index.html` and push. The workflow `.github/workflows/pages.yml` deploys the
+`site/` folder to GitHub Pages. CI cannot build the page, because it has no game files. In the repository settings,
+set Pages to the source "GitHub Actions".
+
 ## Requirements
 
 - Go 1.23 or later. The Go programs get esbuild and lac as Go modules. You do not need Node.js or npm.
